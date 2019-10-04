@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"time"
 
+	"gopkg.in/yaml.v2"
+
+	evokbridge "github.com/automatedhome/evok-mqtt-bridge/pkg/types"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
@@ -21,12 +24,28 @@ type Message struct {
 	} `json:"data"`
 }
 
+var config evokbridge.Config
+
 func main() {
 	broker := flag.String("broker", "tcp://127.0.0.1:1883", "The full url of the MQTT server to connect to ex: tcp://127.0.0.1:1883")
 	clientID := flag.String("clientid", "evoksync", "A clientid for the connection")
 	evok := flag.String("evok", "http://127.0.0.1:8080/json/all", "Address of endpoint exposing all sensors data")
-	interval := flag.Int("interval", 15, "Interval between synchronisations")
+	configFile := flag.String("config", "/config.yaml", "Provide configuration file with MQTT topic mappings")
+	interval := flag.Int("interval", 5, "Interval between synchronisations")
 	flag.Parse()
+
+	log.Printf("Reading configuration from %s", *configFile)
+	data, err := ioutil.ReadFile(*configFile)
+	if err != nil {
+		log.Fatalf("File reading error: %v", err)
+		return
+	}
+
+	err = yaml.UnmarshalStrict(data, &config)
+	//err = yaml.Unmarshal(data, &config)
+	if err != nil {
+		log.Fatalf("error: %v", err)
+	}
 
 	opts := mqtt.NewClientOptions().AddBroker(*broker).SetClientID(*clientID)
 	opts.SetKeepAlive(2 * time.Second)
@@ -56,11 +75,19 @@ func main() {
 			log.Printf("Failed to unmarshal JSON data from EVOK message: %v\n", err)
 		}
 
+		log.Printf("Got data from evok: %v", data)
+
 		for _, sensor := range data.Data {
 			if sensor.Dev != "temp" {
 				continue
 			}
 			topic := "evok/" + sensor.Dev + "/" + sensor.Circuit + "/value"
+			// Map topics to new ones
+			for _, m := range config.Mappings {
+				if m.Device == sensor.Dev && m.Circuit == sensor.Circuit {
+					topic = m.Topic
+				}
+			}
 			token := MQTTClient.Publish(topic, 0, false, fmt.Sprintf("%v", sensor.Value))
 			token.Wait()
 			if token.Error() != nil {
